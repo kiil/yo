@@ -25,25 +25,25 @@ Uses `gemini` with `gemini-3.1-flash-lite-preview` by default. Override per comm
 
 ## Common flags
 
-Alle `yo`-kommandoer (`run`, `ask`, `continue`, `chat`) accepterer:
+All `yo` commands (`run`, `ask`, `continue`, `chat`) accept:
 
 - `--provider` — provider: `anthropic`, `openai`, `gemini` (default: `gemini`)
-- `--model` — modelnavn (default: `gemini-3.1-flash-lite-preview`)
-- `--tools` — preset: `all`, `code`, `web_search`, `none`, `nu`, eller komma-separeret liste
-- `--base-url` — base URL for lokale/custom providers (f.eks. ollama)
-- `--skills` — skill-mapper (komma-separerede paths)
-- `--plugin` — Nushell plugin-paths (kan gentages)
-- `--include-path`, `-I` — Nushell include-paths til module resolution (kan gentages)
-- `--session` — session-fil (JSONL) at fortsætte fra / gemme i
+- `--model` — model name (default: `gemini-3.1-flash-lite-preview`)
+- `--tools` — preset: `all`, `code`, `web_search`, `none`, `nu`, or a comma-separated list
+- `--base-url` — base URL for local/custom providers (e.g. ollama)
+- `--skills` — skill directories (comma-separated paths)
+- `--plugin` — Nushell plugin paths (can be repeated)
+- `--include-path`, `-I` — Nushell include paths for module resolution (can be repeated)
+- `--session` — session file (JSONL) to continue from / save to
 
 ## Chat shell-escapes
 
-Inde i `yo chat` (og `yo xs chat`) kan du køre shell-kommandoer direkte fra prompten:
+Inside `yo chat` (and `yo xs chat`) you can run shell commands directly from the prompt:
 
-- `! <cmd>` — kør `<cmd>` i Nushell og print output lokalt (sendes **ikke** til modellen)
-- `!! <cmd>` — kør `<cmd>` og tilføj både kommando og output til samtalen som en user-besked, så modellen ser resultatet i næste tur
+- `! <cmd>` — run `<cmd>` in Nushell and print output locally (**not** sent to the model)
+- `!! <cmd>` — run `<cmd>` and append both the command and its output to the conversation as a user message, so the model sees the result on the next turn
 
-Eksempel:
+Example:
 
 ```
 you> ! ls
