@@ -110,6 +110,21 @@ def render-yoke-stream [] {
     }
 }
 
+# Build extra yoke flags from common options
+def yoke-extra-args [
+    skills: any
+    plugins: list<string>
+    include_paths: list<string>
+    base_url: any
+] {
+    mut args = []
+    if $base_url != null { $args = ($args | append ["--base-url" $base_url]) }
+    if $skills != null { $args = ($args | append ["--skills" $skills]) }
+    for p in $plugins { $args = ($args | append ["--plugin" $p]) }
+    for i in $include_paths { $args = ($args | append ["-I" $i]) }
+    $args
+}
+
 # --- xs helpers ---
 
 def yo-xs-addr [] {
@@ -167,17 +182,20 @@ export def run [
     --provider: string = "gemini"        # Provider: anthropic, openai, gemini
     --model: string = "gemini-3.1-flash-lite-preview"  # Model name
     --tools: string = "all"                 # Tools: all, code, web_search, none, nu, or comma-separated
+    --base-url: string                      # Base URL for local/custom providers (e.g. ollama)
+    --skills: string                        # Skill directories (comma-separated paths)
+    --plugin: list<string> = []             # Nushell plugin paths (repeatable)
+    --include-path (-I): list<string> = []  # Nushell include paths for module resolution (repeatable)
     --session: path                         # Session file to continue from (JSONL)
 ] {
-    let args = [--provider $provider --model $model --tools $tools $prompt]
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url
+    let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
 
-    let raw = if $session != null {
-        open --raw $session | ^yoke ...$args
+    if $session != null {
+        open --raw $session | ^yoke ...$args | lines | each { from json }
     } else {
-        ^yoke ...$args
+        ^yoke ...$args | lines | each { from json }
     }
-
-    $raw | lines | each { from json }
 }
 
 # Ask yoke a question and return only the final assistant text response
@@ -190,14 +208,21 @@ export def ask [
     --provider: string = "gemini"        # Provider: anthropic, openai, gemini
     --model: string = "gemini-3.1-flash-lite-preview"  # Model name
     --tools: string = "all"                 # Tools preset
+    --base-url: string                      # Base URL for local/custom providers (e.g. ollama)
+    --skills: string                        # Skill directories (comma-separated paths)
+    --plugin: list<string> = []             # Nushell plugin paths (repeatable)
+    --include-path (-I): list<string> = []  # Nushell include paths (repeatable)
     --session: path                         # Session file to continue from
 ] {
-    let result = if $session != null {
-        run $prompt --provider $provider --model $model --tools $tools --session $session
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url
+    let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
+    let state = if $session != null {
+        open --raw $session | ^yoke ...$args | render-yoke-stream
     } else {
-        run $prompt --provider $provider --model $model --tools $tools
+        ^yoke ...$args | render-yoke-stream
     }
-    $result | extract-assistant-text
+    if $state.d { print "" }
+    $state.ctx | extract-assistant-text
 }
 
 # Continue an existing session with a new prompt, saving updated session back to the same file
@@ -210,8 +235,16 @@ export def resume [
     --provider: string = "gemini"        # Provider: anthropic, openai, gemini
     --model: string = "gemini-3.1-flash-lite-preview"  # Model name
     --tools: string = "all"                 # Tools preset
+    --base-url: string                      # Base URL for local/custom providers (e.g. ollama)
+    --skills: string                        # Skill directories (comma-separated paths)
+    --plugin: list<string> = []             # Nushell plugin paths (repeatable)
+    --include-path (-I): list<string> = []  # Nushell include paths (repeatable)
 ] {
-    let result = run $prompt --provider $provider --model $model --tools $tools --session $session
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url
+    let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
+    let state = open --raw $session | ^yoke ...$args | render-yoke-stream
+    if $state.d { print "" }
+    let result = $state.ctx
     let new_context = $result | where { $in | get role? | $in != null }
     let existing = open --raw $session | str trim
     let appended = $new_context | each { to json -r } | str join "\n"
@@ -292,6 +325,10 @@ export def chat [
     --provider: string = "gemini"                      # Provider: anthropic, openai, gemini
     --model: string = "gemini-3.1-flash-lite-preview"  # Model name
     --tools: string = "all"                            # Tools preset
+    --base-url: string                                 # Base URL for local/custom providers (e.g. ollama)
+    --skills: string                                   # Skill directories (comma-separated paths)
+    --plugin: list<string> = []                        # Nushell plugin paths (repeatable)
+    --include-path (-I): list<string> = []             # Nushell include paths (repeatable)
     --session: path                                    # Resume from an existing session file
 ] {
     let session_file = if $session != null {
@@ -330,6 +367,19 @@ export def chat [
         let prompt = input --reedline --history-file $history_file $"(ansi blue_bold)you> (ansi reset)"
         if ($prompt | str trim) == "" { continue }
 
+        if ($prompt | str trim | str starts-with "!!") {
+            let cmd = $prompt | str trim | str substring 2..
+            print $"(ansi attr_dimmed)!! ($cmd)(ansi reset)"
+            let result = ^nu -c $cmd | complete
+            let combined = [$result.stdout $result.stderr] | str join "" | str trim
+            if $combined != "" { print $combined }
+            let user_msg = {role: "user", content: [{type: "text", text: $"!! ($cmd)\n($combined)"}]}
+            let existing = open --raw $session_file | str trim
+            $"($existing)\n($user_msg | to json -r)" | save --force $session_file
+            print ""
+            continue
+        }
+
         if ($prompt | str trim | str starts-with "!") {
             let cmd = $prompt | str trim | str substring 1..
             print $"(ansi attr_dimmed)! ($cmd)(ansi reset)"
@@ -362,7 +412,8 @@ export def chat [
 
         $turn = $turn + 1
 
-        let args = [--provider $provider --model $model --tools $tools $prompt]
+        let extra = yoke-extra-args $skills $plugin $include_path $base_url
+        let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
         let state = open --raw $session_file | ^yoke ...$args | render-yoke-stream
 
         if $state.d { print ""; print "" }
@@ -386,22 +437,26 @@ export def "xs run" [
     --provider: string = "gemini"        # Provider: anthropic, openai, gemini
     --model: string = "gemini-3.1-flash-lite-preview"  # Model name
     --tools: string = "all"                 # Tools preset
+    --base-url: string                      # Base URL for local/custom providers (e.g. ollama)
+    --skills: string                        # Skill directories (comma-separated paths)
+    --plugin: list<string> = []             # Nushell plugin paths (repeatable)
+    --include-path (-I): list<string> = []  # Nushell include paths (repeatable)
     --session: string                       # Session name (auto-generated if omitted)
 ] {
     yo-xs-check
     let name = if $session != null { $session } else { xs scru128 }
-    let args = [--provider $provider --model $model --tools $tools $prompt]
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url
+    let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
 
     let context = yo-xs-read $name
-    let raw = if ($context | str trim) != "" {
-        $context | ^yoke ...$args
+    let state = if ($context | str trim) != "" {
+        $context | ^yoke ...$args | render-yoke-stream
     } else {
-        ^yoke ...$args
+        ^yoke ...$args | render-yoke-stream
     }
-
-    let records = $raw | lines | each { from json }
-    $records | where { $in | get role? | $in != null } | yo-xs-store $name
-    $records
+    if $state.d { print "" }
+    $state.ctx | yo-xs-store $name
+    $state.ctx
 }
 
 # Ask yoke via xs and return only the final assistant text
@@ -414,14 +469,25 @@ export def "xs ask" [
     --provider: string = "gemini"        # Provider: anthropic, openai, gemini
     --model: string = "gemini-3.1-flash-lite-preview"  # Model name
     --tools: string = "all"                 # Tools preset
+    --base-url: string                      # Base URL for local/custom providers (e.g. ollama)
+    --skills: string                        # Skill directories (comma-separated paths)
+    --plugin: list<string> = []             # Nushell plugin paths (repeatable)
+    --include-path (-I): list<string> = []  # Nushell include paths (repeatable)
     --session: string                       # Session name (auto-generated if omitted)
 ] {
-    let result = if $session != null {
-        xs run $prompt --provider $provider --model $model --tools $tools --session $session
+    yo-xs-check
+    let name = if $session != null { $session } else { xs scru128 }
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url
+    let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
+    let context = yo-xs-read $name
+    let state = if ($context | str trim) != "" {
+        $context | ^yoke ...$args | render-yoke-stream
     } else {
-        xs run $prompt --provider $provider --model $model --tools $tools
+        ^yoke ...$args | render-yoke-stream
     }
-    $result | extract-assistant-text
+    if $state.d { print "" }
+    $state.ctx | yo-xs-store $name
+    $state.ctx | extract-assistant-text
 }
 
 # List yo sessions stored in xs
@@ -476,6 +542,10 @@ export def "xs chat" [
     --provider: string = "gemini"                      # Provider: anthropic, openai, gemini
     --model: string = "gemini-3.1-flash-lite-preview"  # Model name
     --tools: string = "all"                            # Tools preset
+    --base-url: string                                 # Base URL for local/custom providers (e.g. ollama)
+    --skills: string                                   # Skill directories (comma-separated paths)
+    --plugin: list<string> = []                        # Nushell plugin paths (repeatable)
+    --include-path (-I): list<string> = []             # Nushell include paths (repeatable)
     --session: string                                  # Session name (auto-generated if omitted)
 ] {
     yo-xs-check
@@ -515,6 +585,18 @@ export def "xs chat" [
         let prompt = input --reedline --history-file $history_file $"(ansi blue_bold)you> (ansi reset)"
         if ($prompt | str trim) == "" { continue }
 
+        if ($prompt | str trim | str starts-with "!!") {
+            let cmd = $prompt | str trim | str substring 2..
+            print $"(ansi attr_dimmed)!! ($cmd)(ansi reset)"
+            let result = ^nu -c $cmd | complete
+            let combined = [$result.stdout $result.stderr] | str join "" | str trim
+            if $combined != "" { print $combined }
+            let user_msg = {role: "user", content: [{type: "text", text: $"!! ($cmd)\n($combined)"}]}
+            [$user_msg] | yo-xs-store $name
+            print ""
+            continue
+        }
+
         if ($prompt | str trim | str starts-with "!") {
             let cmd = $prompt | str trim | str substring 1..
             print $"(ansi attr_dimmed)! ($cmd)(ansi reset)"
@@ -548,7 +630,8 @@ export def "xs chat" [
 
         $turn = $turn + 1
 
-        let args = [--provider $provider --model $model --tools $tools $prompt]
+        let extra = yoke-extra-args $skills $plugin $include_path $base_url
+        let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
         let context = yo-xs-read $name
         let state = if ($context | str trim) != "" {
             $context | ^yoke ...$args | render-yoke-stream
@@ -579,17 +662,22 @@ export def "xs spawn" [
     --provider: string = "gemini"
     --model: string = "gemini-3.1-flash-lite-preview"
     --tools: string = "all"
+    --base-url: string                          # Base URL for local/custom providers (e.g. ollama)
+    --skills: string                            # Skill directories (comma-separated paths)
+    --plugin: list<string> = []                 # Nushell plugin paths (repeatable)
+    --include-path (-I): list<string> = []      # Nushell include paths (repeatable)
     --system: string                            # Optional system prompt prepended to each call
 ] {
     yo-xs-check
     let addr = yo-xs-addr
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url | each {|a| $"\"($a)\""} | str join " "
     let script = if $system != null {
         '{
   run: {||
     .cat -f --topic "__WATCH__" | each {|frame|
       let prompt = .cas $frame.hash
       let sys = {role: "system", content: [{type: "text", text: "__SYSTEM__"}]} | to json -r
-      $"($sys)\n($prompt)" | ^yoke --provider __PROVIDER__ --model __MODEL__ --tools __TOOLS__
+      $"($sys)\n($prompt)" | ^yoke --provider __PROVIDER__ --model __MODEL__ --tools __TOOLS__ __EXTRA__
     }
   }
   return_options: { suffix: ".recv", target: "cas" }
@@ -600,7 +688,7 @@ export def "xs spawn" [
   run: {||
     .cat -f --topic "__WATCH__" | each {|frame|
       let prompt = .cas $frame.hash
-      $prompt | ^yoke --provider __PROVIDER__ --model __MODEL__ --tools __TOOLS__
+      $prompt | ^yoke --provider __PROVIDER__ --model __MODEL__ --tools __TOOLS__ __EXTRA__
     }
   }
   return_options: { suffix: ".recv", target: "cas" }
@@ -611,6 +699,7 @@ export def "xs spawn" [
         | str replace __PROVIDER__ $provider
         | str replace __MODEL__ $model
         | str replace __TOOLS__ $tools
+        | str replace __EXTRA__ $extra
 
     $script | xs append $addr $"($name).spawn"
 }
@@ -628,16 +717,21 @@ export def "xs define" [
     --provider: string = "gemini"
     --model: string = "gemini-3.1-flash-lite-preview"
     --tools: string = "all"
+    --base-url: string                          # Base URL for local/custom providers (e.g. ollama)
+    --skills: string                            # Skill directories (comma-separated paths)
+    --plugin: list<string> = []                 # Nushell plugin paths (repeatable)
+    --include-path (-I): list<string> = []      # Nushell include paths (repeatable)
     --system: string                            # Optional system prompt
 ] {
     yo-xs-check
     let addr = yo-xs-addr
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url | each {|a| $"\"($a)\""} | str join " "
     let script = if $system != null {
         '{
   run: {|frame|
     let prompt = if ($frame.hash != null) { .cas $frame.hash } else { "" }
     let sys = {role: "system", content: [{type: "text", text: "__SYSTEM__"}]} | to json -r
-    $"($sys)\n($prompt)" | ^yoke --provider __PROVIDER__ --model __MODEL__ --tools __TOOLS__
+    $"($sys)\n($prompt)" | ^yoke --provider __PROVIDER__ --model __MODEL__ --tools __TOOLS__ __EXTRA__
   }
   return_options: { suffix: ".response", target: "cas" }
 }'
@@ -646,7 +740,7 @@ export def "xs define" [
         '{
   run: {|frame|
     let prompt = if ($frame.hash != null) { .cas $frame.hash } else { "" }
-    $prompt | ^yoke --provider __PROVIDER__ --model __MODEL__ --tools __TOOLS__
+    $prompt | ^yoke --provider __PROVIDER__ --model __MODEL__ --tools __TOOLS__ __EXTRA__
   }
   return_options: { suffix: ".response", target: "cas" }
 }'
@@ -655,6 +749,7 @@ export def "xs define" [
         | str replace __PROVIDER__ $provider
         | str replace __MODEL__ $model
         | str replace __TOOLS__ $tools
+        | str replace __EXTRA__ $extra
 
     let result = $script | xs append $addr $"($name).define" | from json
 
