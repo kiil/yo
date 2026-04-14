@@ -23,6 +23,33 @@ Uses `gemini` with `gemini-3.1-flash-lite-preview` by default. Override per comm
 - NUON-aware tool output rendering with truncation for long results
 - Token usage tracking across multi-turn conversations
 
+## Common flags
+
+Alle `yo`-kommandoer (`run`, `ask`, `continue`, `chat`) accepterer:
+
+- `--provider` — provider: `anthropic`, `openai`, `gemini` (default: `gemini`)
+- `--model` — modelnavn (default: `gemini-3.1-flash-lite-preview`)
+- `--tools` — preset: `all`, `code`, `web_search`, `none`, `nu`, eller komma-separeret liste
+- `--base-url` — base URL for lokale/custom providers (f.eks. ollama)
+- `--skills` — skill-mapper (komma-separerede paths)
+- `--plugin` — Nushell plugin-paths (kan gentages)
+- `--include-path`, `-I` — Nushell include-paths til module resolution (kan gentages)
+- `--session` — session-fil (JSONL) at fortsætte fra / gemme i
+
+## Chat shell-escapes
+
+Inde i `yo chat` (og `yo xs chat`) kan du køre shell-kommandoer direkte fra prompten:
+
+- `! <cmd>` — kør `<cmd>` i Nushell og print output lokalt (sendes **ikke** til modellen)
+- `!! <cmd>` — kør `<cmd>` og tilføj både kommando og output til samtalen som en user-besked, så modellen ser resultatet i næste tur
+
+Eksempel:
+
+```
+you> ! ls
+you> !! cat src/main.rs
+```
+
 ## xs (cross.stream) integration
 
 When [xs](https://github.com/cablehead/xs) is running, `yo` gains persistent, session-backed commands under the `xs` subcommand:
