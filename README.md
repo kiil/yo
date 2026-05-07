@@ -110,6 +110,29 @@ system                           # show current system prompt
 system --clear                   # remove system prompt
 ```
 
+Extracting and executing code from replies:
+
+```nushell
+grab                             # parse first fenced codeblock from latest reply
+grab -i 1                        # second codeblock
+grab --raw                       # raw string, skip parsing
+grab -f yaml                     # force a format even if fence is bare
+grab --list                      # table of {index, lang, preview}
+```
+
+`grab` reads the language tag from the fence (```json, ```yaml, ```toml, ```csv, ```tsv, ```ssv, ```nuon, ```xml, ```ini, ```url, ...) and pipes the body through the matching `from <fmt>` command. Untagged blocks fall back to `from json`, then `from nuon`.
+
+```nushell
+run                              # paste first ```nu / ```nushell block into REPL prompt
+run -i 1                         # second nushell block
+run --any                        # also accept untagged ``` blocks
+run --exec                       # run in a `nu` subprocess instead of REPL paste
+run --print                      # show the code without running it
+run --raw | save out.nu          # return code as string for piping
+```
+
+By default `run` loads the code into the reedline prompt buffer via `commandline edit`, so pressing Enter executes it in the *current* session — env mutations, overlay changes, and `let` bindings persist. `--exec` forks a `nu` subprocess instead (no scope persistence, but works in non-interactive contexts).
+
 Switching provider, model, and tools on the fly:
 
 ```nushell
@@ -129,6 +152,8 @@ Short aliases (handy for fast back-and-forth):
 | `,,`  | `reply`  |
 | `,.`  | `reset`  |
 | `,-`  | `pop`    |
+| `,g`  | `grab`   |
+| `,r`  | `run`    |
 | `,?`  | `status` |
 | `,:`  | `cfg`    |
 | `,m`  | `model`  |

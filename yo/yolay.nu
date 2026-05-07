@@ -1,51 +1,21 @@
 # yo repl - Nushell overlay for in-REPL yoke conversations
 #
-# === About Nushell overlay mode ===
-#
-# An overlay in Nushell is a named layer on top of the active scope that
-# injects commands, aliases, and env variables into the current shell
-# (unlike `use`, which only pulls definitions in without opening a live
-# session). That means:
-#
-#   • Exported env variables (here $env.YO_CTX and $env.YO_CFG) live in
-#     your REPL, so the conversation's full role-bearing context persists
-#     between calls.
-#   • Commands marked `export def --env` can mutate those env vars, which
-#     is the core of how `say`, `reset`, `pop`, etc. work.
-#   • The overlay can be toggled on/off without restarting the shell, and
-#     `overlay hide` discards the whole conversation in one go.
-#   • The `export-env { ... }` block at the bottom runs at load time and
-#     sets up defaults and the right-prompt segment.
-#
-# Load / unload:
-#   overlay use yo/yolay.nu          # activate overlay (name becomes `yolay`)
-#   overlay use yo/yolay.nu as yo    # give the overlay a shorter name
-#   overlay list                     # show active overlays
-#   overlay hide yolay               # detach (conversation goes away)
-#   overlay hide --keep-env [YO_CTX YO_CFG]  # detach but keep context
-#
-# Scope detail: because $env mutations in Nushell are normally scoped to
-# the block, commands that change the conversation *must* be `--env`.
-# That is why `say`, `reset`, `pop`, `restore`, `cfg`, `model`, `tools`,
-# and `system` are all declared with `--env`.
-#
-# === State ===
-#
-# The full role-bearing context lives in $env.YO_CTX; runtime defaults
-# (provider, model, tools, ...) live in $env.YO_CFG.
+# Loads as an overlay so a conversation lives in the current shell.
+# The full role-bearing context is kept in $env.YO_CTX, runtime
+# defaults (provider, model, tools, ...) live in $env.YO_CFG.
 #
 # Quick start:
-#   overlay use yo/yolay.nu
-#   say "hi, what can you do?"
-#   say "elaborate on that"       # continues the conversation
-#   reply                         # latest assistant text
-#   ctx                           # full context
-#   reset                         # reset the conversation
-#   overlay hide yolay            # drop the overlay (and the conversation)
+#   overlay use yo/repl.nu
+#   say "hej, hvad kan du?"
+#   say "uddyb det sidste"        # samme som `again ...` - fortsætter samtalen
+#   reply                         # seneste assistant-tekst
+#   ctx                           # hele konteksten
+#   reset                         # nulstil samtalen
+#   overlay hide repl             # smid overlayet (og dermed samtalen) væk
 #
-# Pipeline-friendly variants:
-#   "summarize this" | say        # prompt from pipe
-#   reply | save -f out.md        # send last reply onward via builtin `save`
+# Pipeline-venlige varianter:
+#   "opsummér dette" | say        # prompt fra pipe
+#   reply | save -f out.md        # send sidste svar videre via builtin `save`
 
 # --- Defaults ---
 
@@ -253,7 +223,7 @@ def yo-complete-tools-rest [context: string] {
 #
 # Examples:
 #   reset
-#   reset "you answer briefly and in English"
+#   reset "du svarer kort og på dansk"
 export def --env reset [
     system?: string   # Optional system prompt to seed the new context with
 ] {
@@ -276,9 +246,9 @@ export alias ,. = reset
 # Prompt may be passed positionally or via pipeline.
 #
 # Examples:
-#   say "which files are here?"
-#   "summarize" | say
-#   say "continue" --tools none
+#   say "hvilke filer er her?"
+#   "opsummér" | say
+#   say "fortsæt" --tools none
 export def --env say [
     --provider: string@yo-complete-provider   # Override provider for this turn
     --model: string@yo-complete-model         # Override model for this turn
@@ -329,8 +299,8 @@ export def --env say [
 
 # Alias for `say` — reads more naturally for follow-ups.
 #
-#   say "what is rust?"
-#   again "give an example"
+#   say "hvad er rust?"
+#   again "giv et eksempel"
 export alias , = say
 
 # Show the full current context (role-bearing records).
@@ -361,6 +331,151 @@ export def reply [] {
 }
 
 export alias ,, = reply
+
+# Extract a fenced codeblock from the latest assistant reply and parse it
+# with the matching `from <fmt>` command. Defaults to the first block;
+# pass `--index N` to pick another. Format is taken from the fence's
+# language tag (```json, ```yaml, ...) and can be overridden with
+# `--format`. Use `--raw` to skip parsing and get the block as a string.
+# Use `--list` to see all blocks with their language tags.
+#
+# Examples:
+#   grab                       # parse first codeblock from latest reply
+#   grab -i 1                  # second codeblock
+#   grab --raw                 # raw string, no parsing
+#   grab -f yaml               # force yaml even if fence is bare
+#   grab --list                # table of {index, lang, preview}
+export def grab [
+    --index (-i): int = 0     # which codeblock (0 = first)
+    --raw                      # return raw string, do not parse
+    --format (-f): string      # override format (json, yaml, toml, csv, tsv, nuon, xml, ssv)
+    --list (-l)                # list all codeblocks instead of extracting
+] {
+    let text = reply
+    if ($text | str trim | is-empty) {
+        error make {msg: "grab: latest reply is empty"}
+    }
+    let blocks = $text
+        | parse --regex '(?s)```(?<lang>[^\n`]*)\n(?<body>.*?)```'
+    if ($blocks | is-empty) {
+        error make {msg: "grab: no fenced codeblocks in latest reply"}
+    }
+    if $list {
+        return ($blocks | enumerate | each {|row|
+            {
+                i: $row.index
+                lang: ($row.item.lang | str trim)
+                preview: ($row.item.body | str substring 0..80 | str replace --all "\n" "⏎ ")
+            }
+        })
+    }
+    let n = $blocks | length
+    if $index >= $n or $index < 0 {
+        error make {msg: $"grab: index ($index) out of range (0..($n - 1))"}
+    }
+    let block = $blocks | get $index
+    let body = $block.body
+    if $raw { return $body }
+    let lang = $block.lang | str trim | str downcase
+    let fmt = if $format != null { $format | str downcase } else { $lang }
+    match $fmt {
+        "" | "json" => ($body | from json)
+        "yaml" | "yml" => ($body | from yaml)
+        "toml" => ($body | from toml)
+        "csv" => ($body | from csv)
+        "tsv" => ($body | from tsv)
+        "ssv" => ($body | from ssv)
+        "nuon" | "nu" => ($body | from nuon)
+        "xml" | "html" => ($body | from xml)
+        "ini" => ($body | from ini)
+        "url" => ($body | from url)
+        _ => {
+            # Last-ditch: try json, then nuon, else error with hint.
+            let j = try { $body | from json } catch { null }
+            if $j != null { return $j }
+            let n = try { $body | from nuon } catch { null }
+            if $n != null { return $n }
+            error make {msg: $"grab: unknown format '($fmt)' — pass --format or --raw"}
+        }
+    }
+}
+
+export alias ,g = grab
+
+# Execute a nushell codeblock from the latest assistant reply. Picks the
+# first fenced block tagged ```nu / ```nushell by default; use `--index`
+# to pick another, or `--any` to fall back to the first untagged block.
+#
+# By default the code is loaded into the REPL prompt buffer via
+# `commandline edit` so pressing Enter executes it in the *current*
+# session (env mutations, overlay changes, and `let` bindings persist).
+# Use `--exec` to instead run it in a `nu` subprocess (no scope
+# persistence, but works outside an interactive REPL — e.g. in scripts).
+# `--print` shows the code without running, `--raw` returns it as a
+# string for piping (e.g. `run --raw | pbcopy`).
+#
+# Examples:
+#   run                       # load first ```nu block into REPL buffer
+#   run --exec                # run in subprocess instead
+#   run -i 1                  # second nushell block
+#   run --print               # show code, do not run
+#   run --raw | save out.nu
+export def run [
+    --index (-i): int = 0     # which nushell block (0 = first)
+    --any (-a)                 # also accept untagged ``` blocks
+    --exec (-x)                # run in `nu` subprocess instead of REPL paste
+    --print (-p)               # print the code instead of running
+    --raw                      # return code as string (no exec, no print)
+] {
+    let text = reply
+    if ($text | str trim | is-empty) {
+        error make {msg: "run: latest reply is empty"}
+    }
+    let blocks = $text
+        | parse --regex '(?s)```(?<lang>[^\n`]*)\n(?<body>.*?)```'
+        | each {|b| {lang: ($b.lang | str trim | str downcase), body: $b.body} }
+    if ($blocks | is-empty) {
+        error make {msg: "run: no fenced codeblocks in latest reply"}
+    }
+    let nu_tags = ["nu" "nushell"]
+    let candidates = if $any {
+        $blocks | where { $in.lang in $nu_tags or $in.lang == "" }
+    } else {
+        $blocks | where { $in.lang in $nu_tags }
+    }
+    if ($candidates | is-empty) {
+        let hint = if $any { "" } else { " (try --any to include untagged blocks)" }
+        error make {msg: $"run: no nushell codeblocks in latest reply($hint)"}
+    }
+    let n = $candidates | length
+    if $index >= $n or $index < 0 {
+        error make {msg: $"run: index ($index) out of range (0..($n - 1))"}
+    }
+    let code = $candidates | get $index | get body
+    if $raw { return $code }
+    if $print {
+        print $"(ansi attr_dimmed)── nushell block ──(ansi reset)"
+        print $code
+        return
+    }
+    if $exec {
+        print $"(ansi attr_dimmed)── running nushell block (subprocess) ──(ansi reset)"
+        ^nu --no-newline -c $code
+        return
+    }
+    # Default: drop the code into the reedline prompt buffer. The user
+    # presses Enter to execute it in the current REPL scope.
+    try {
+        commandline edit --replace $code
+        print $"(ansi attr_dimmed)── pasted into prompt · press Enter to run ──(ansi reset)"
+    } catch {
+        # Not in an interactive reedline session — fall back to subprocess.
+        print $"(ansi attr_dimmed)── no reedline · running in subprocess ──(ansi reset)"
+        ^nu --no-newline -c $code
+    }
+}
+
+export alias ,r = run
 
 # Drop the last user/assistant exchange (best-effort: walks back from
 # the tail until it has popped one assistant block).
@@ -470,7 +585,7 @@ export alias ,t = tools
 # $env.YO_CTX.
 #
 # Examples:
-#   system "you answer briefly and in English"
+#   system "du svarer kort og på dansk"
 #   "load this from a file" | system
 #   system                  # show current system prompt
 #   system --clear          # remove system prompt
