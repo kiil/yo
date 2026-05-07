@@ -66,6 +66,81 @@ you> !| save -f reply.md
 you> !| from json | get items
 ```
 
+## yolay — REPL overlay
+
+`yo/yolay.nu` is a Nushell *overlay* that keeps a live conversation inside your current shell. Unlike `use`, an overlay injects commands and env variables into the active scope, so the conversation context (`$env.YO_CTX`) and runtime config (`$env.YO_CFG`) persist between calls until you hide the overlay.
+
+Load it:
+
+```nushell
+overlay use yo/yolay.nu          # overlay name becomes `yolay`
+overlay use yo/yolay.nu as yo    # or pick a shorter name
+overlay list                     # show active overlays
+overlay hide yolay               # detach (drops the conversation)
+```
+
+Basic conversation:
+
+```nushell
+say "hi, what can you do?"
+say "elaborate on that"          # continues the same conversation
+reply                            # latest assistant text
+ctx                              # full role-bearing context
+turns                            # slim table of the conversation
+reset                            # start a fresh context
+reset "you answer briefly"       # reset and seed a system prompt
+```
+
+Pipeline-friendly:
+
+```nushell
+"summarize this file" | say
+open notes.md | say "rewrite as bullet points:"
+reply | save -f out.md
+```
+
+Editing the conversation:
+
+```nushell
+pop                              # drop the last user/assistant exchange
+snap session.jsonl               # save current context to JSONL
+restore session.jsonl            # load JSONL back into the overlay
+system "you answer in English"   # set/replace system prompt (kept at head)
+system                           # show current system prompt
+system --clear                   # remove system prompt
+```
+
+Switching provider, model, and tools on the fly:
+
+```nushell
+cfg                              # show current config
+cfg {tools: "code"}              # merge a partial update
+model claude-sonnet-4-5 --provider anthropic
+tools bash read_file search      # space-separated, joined with commas
+say "fix the bug" --tools none   # one-shot override for this turn
+status                           # one-line banner
+```
+
+Short aliases (handy for fast back-and-forth):
+
+| alias | command  |
+| ----- | -------- |
+| `,`   | `say`    |
+| `,,`  | `reply`  |
+| `,.`  | `reset`  |
+| `,-`  | `pop`    |
+| `,?`  | `status` |
+| `,:`  | `cfg`    |
+| `,m`  | `model`  |
+| `,t`  | `tools`  |
+| `,s`  | `system` |
+| `,$`  | `turns`  |
+| `,$$` | `ctx`    |
+| `,>`  | `snap`   |
+| `,<`  | `restore`|
+
+When the overlay is active, the right-prompt shows the current model, record count, and tools preset.
+
 ## xs (cross.stream) integration
 
 When [xs](https://github.com/cablehead/xs) is running, `yo` gains persistent, session-backed commands under the `xs` subcommand:
