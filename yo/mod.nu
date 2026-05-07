@@ -7,6 +7,8 @@ const MODEL = "gemini-3.1-flash-lite-preview"
 
 # --- Shared helpers ---
 
+export def ass [] { where role? == assistant | last | get content | get text.0 }
+
 # Extract final assistant text from role-bearing records
 def extract-assistant-text [] {
     $in
@@ -116,12 +118,14 @@ def yoke-extra-args [
     plugins: list<string>
     include_paths: list<string>
     base_url: any
+    config: any = null
 ] {
     mut args = []
     if $base_url != null { $args = ($args | append ["--base-url" $base_url]) }
     if $skills != null { $args = ($args | append ["--skills" $skills]) }
     for p in $plugins { $args = ($args | append ["--plugin" $p]) }
     for i in $include_paths { $args = ($args | append ["-I" $i]) }
+    if $config != null { $args = ($args | append ["--config" $config]) }
     $args
 }
 
@@ -186,9 +190,10 @@ export def run [
     --skills: string                        # Skill directories (comma-separated paths)
     --plugin: list<string> = []             # Nushell plugin paths (repeatable)
     --include-path (-I): list<string> = []  # Nushell include paths for module resolution (repeatable)
+    --config: path                          # Nushell config script run once at startup (use, def, env mutations persist)
     --session: path                         # Session file to continue from (JSONL)
 ] {
-    let extra = yoke-extra-args $skills $plugin $include_path $base_url
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url $config
     let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
 
     if $session != null {
@@ -212,9 +217,10 @@ export def ask [
     --skills: string                        # Skill directories (comma-separated paths)
     --plugin: list<string> = []             # Nushell plugin paths (repeatable)
     --include-path (-I): list<string> = []  # Nushell include paths (repeatable)
+    --config: path                          # Nushell config script run once at startup
     --session: path                         # Session file to continue from
 ] {
-    let extra = yoke-extra-args $skills $plugin $include_path $base_url
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url $config
     let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
     let state = if $session != null {
         open --raw $session | ^yoke ...$args | render-yoke-stream
@@ -225,13 +231,19 @@ export def ask [
     $state.ctx | extract-assistant-text
 }
 
-# Continue an existing session with a new prompt, saving updated session back to the same file
+# Continue an existing session with a new prompt
+#
+# Accepts the prior session either as a JSONL file path or via pipeline input
+# (raw JSONL string or a list of records). When given a file path, the updated
+# session is written back to that same file.
 #
 # Examples:
 #   yo resume session.jsonl "now count them"
+#   open session.jsonl | lines | each { from json } | yo resume "now count them"
+#   open --raw session.jsonl | yo resume "now count them"
 export def resume [
-    session: path                           # Session JSONL file to read and update
     prompt: string                          # Follow-up prompt
+    --session: path                         # Session JSONL file to read and update (omit to use piped input)
     --provider: string = "gemini"        # Provider: anthropic, openai, gemini
     --model: string = "gemini-3.1-flash-lite-preview"  # Model name
     --tools: string = "all"                 # Tools preset
@@ -239,16 +251,36 @@ export def resume [
     --skills: string                        # Skill directories (comma-separated paths)
     --plugin: list<string> = []             # Nushell plugin paths (repeatable)
     --include-path (-I): list<string> = []  # Nushell include paths (repeatable)
+    --config: path                          # Nushell config script run once at startup
 ] {
-    let extra = yoke-extra-args $skills $plugin $include_path $base_url
+    let piped = $in
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url $config
     let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
-    let state = open --raw $session | ^yoke ...$args | render-yoke-stream
+
+    let prior = if $session != null {
+        open --raw $session | str trim
+    } else if $piped == null {
+        error make {msg: "yo resume: provide --session <file> or pipe in JSONL records"}
+    } else {
+        let kind = $piped | describe
+        if ($kind | str starts-with "record") {
+            $piped | to json -r
+        } else if ($kind | str starts-with "list") or ($kind | str starts-with "table") {
+            $piped | each { to json -r } | str join "\n"
+        } else {
+            $piped | into string | str trim
+        }
+    }
+
+    let state = $prior | ^yoke ...$args | render-yoke-stream
     if $state.d { print "" }
     let result = $state.ctx
-    let new_context = $result | where { $in | get role? | $in != null }
-    let existing = open --raw $session | str trim
-    let appended = $new_context | each { to json -r } | str join "\n"
-    $"($existing)\n($appended)" | save --force $session
+
+    if $session != null {
+        let new_context = $result | where { $in | get role? | $in != null }
+        let appended = $new_context | each { to json -r } | str join "\n"
+        $"($prior)\n($appended)" | save --force $session
+    }
     $result
 }
 
@@ -329,6 +361,7 @@ export def chat [
     --skills: string                                   # Skill directories (comma-separated paths)
     --plugin: list<string> = []                        # Nushell plugin paths (repeatable)
     --include-path (-I): list<string> = []             # Nushell include paths (repeatable)
+    --config: path                                     # Nushell config script run once at startup
     --session: path                                    # Resume from an existing session file
 ] {
     let session_file = if $session != null {
@@ -349,6 +382,25 @@ export def chat [
 
     print $"(ansi cyan_bold)yo chat(ansi reset) · ($provider)/($model) · tools: ($tools)"
     print $"session: ($session_file)"
+    if ($plugin | is-not-empty) {
+        print $"(ansi attr_dimmed)plugins:(ansi reset)"
+        for p in $plugin {
+            let mark = if ($p | path exists) { $"(ansi green)ok(ansi reset)" } else { $"(ansi red)missing(ansi reset)" }
+            print $"  ($mark) ($p)"
+        }
+    }
+    if ($include_path | is-not-empty) {
+        print $"(ansi attr_dimmed)include paths:(ansi reset)"
+        for ip in $include_path {
+            if ($ip | path exists) {
+                let mods = try { ls $"($ip)/*.nu" | get name | each { path basename } | str join ", " } catch { "" }
+                let suffix = if ($mods | is-empty) { "" } else { $" → ($mods)" }
+                print $"  (ansi green)ok(ansi reset) ($ip)($suffix)"
+            } else {
+                print $"  (ansi red)missing(ansi reset) ($ip)"
+            }
+        }
+    }
     print $"type (ansi yellow_bold)/quit(ansi reset) to exit, (ansi yellow_bold)/save <path>(ansi reset) to copy session"
     print ""
 
@@ -376,6 +428,27 @@ export def chat [
             let user_msg = {role: "user", content: [{type: "text", text: $"!! ($cmd)\n($combined)"}]}
             let existing = open --raw $session_file | str trim
             $"($existing)\n($user_msg | to json -r)" | save --force $session_file
+            print ""
+            continue
+        }
+
+        if ($prompt | str trim | str starts-with "!|") {
+            let cmd = $prompt | str trim | str substring 2.. | str trim
+            let last = open --raw $session_file | lines | each { from json } | extract-assistant-text
+            print $"(ansi attr_dimmed)!| ($cmd)(ansi reset)"
+            let result = do {
+                $env.YO_LAST = $last
+                ^nu -c $"$env.YO_LAST | ($cmd)"
+            } | complete
+            if $result.exit_code == 0 {
+                if ($result.stdout | str trim) != "" { print ($result.stdout | str trim) }
+            } else {
+                if ($result.stderr | str trim) != "" {
+                    print $"(ansi red_bold)($result.stderr | str trim)(ansi reset)"
+                } else if ($result.stdout | str trim) != "" {
+                    print ($result.stdout | str trim)
+                }
+            }
             print ""
             continue
         }
@@ -412,7 +485,7 @@ export def chat [
 
         $turn = $turn + 1
 
-        let extra = yoke-extra-args $skills $plugin $include_path $base_url
+        let extra = yoke-extra-args $skills $plugin $include_path $base_url $config
         let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
         let state = open --raw $session_file | ^yoke ...$args | render-yoke-stream
 
@@ -441,11 +514,12 @@ export def "xs run" [
     --skills: string                        # Skill directories (comma-separated paths)
     --plugin: list<string> = []             # Nushell plugin paths (repeatable)
     --include-path (-I): list<string> = []  # Nushell include paths (repeatable)
+    --config: path                          # Nushell config script run once at startup
     --session: string                       # Session name (auto-generated if omitted)
 ] {
     yo-xs-check
     let name = if $session != null { $session } else { xs scru128 }
-    let extra = yoke-extra-args $skills $plugin $include_path $base_url
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url $config
     let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
 
     let context = yo-xs-read $name
@@ -473,11 +547,12 @@ export def "xs ask" [
     --skills: string                        # Skill directories (comma-separated paths)
     --plugin: list<string> = []             # Nushell plugin paths (repeatable)
     --include-path (-I): list<string> = []  # Nushell include paths (repeatable)
+    --config: path                          # Nushell config script run once at startup
     --session: string                       # Session name (auto-generated if omitted)
 ] {
     yo-xs-check
     let name = if $session != null { $session } else { xs scru128 }
-    let extra = yoke-extra-args $skills $plugin $include_path $base_url
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url $config
     let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
     let context = yo-xs-read $name
     let state = if ($context | str trim) != "" {
@@ -546,6 +621,7 @@ export def "xs chat" [
     --skills: string                                   # Skill directories (comma-separated paths)
     --plugin: list<string> = []                        # Nushell plugin paths (repeatable)
     --include-path (-I): list<string> = []             # Nushell include paths (repeatable)
+    --config: path                                     # Nushell config script run once at startup
     --session: string                                  # Session name (auto-generated if omitted)
 ] {
     yo-xs-check
@@ -597,6 +673,28 @@ export def "xs chat" [
             continue
         }
 
+        if ($prompt | str trim | str starts-with "!|") {
+            let cmd = $prompt | str trim | str substring 2.. | str trim
+            let frames = yo-xs-cat $name
+            let last = $frames | each {|f| xs cas (yo-xs-addr) $f.hash | from json } | extract-assistant-text
+            print $"(ansi attr_dimmed)!| ($cmd)(ansi reset)"
+            let result = do {
+                $env.YO_LAST = $last
+                ^nu -c $"$env.YO_LAST | ($cmd)"
+            } | complete
+            if $result.exit_code == 0 {
+                if ($result.stdout | str trim) != "" { print ($result.stdout | str trim) }
+            } else {
+                if ($result.stderr | str trim) != "" {
+                    print $"(ansi red_bold)($result.stderr | str trim)(ansi reset)"
+                } else if ($result.stdout | str trim) != "" {
+                    print ($result.stdout | str trim)
+                }
+            }
+            print ""
+            continue
+        }
+
         if ($prompt | str trim | str starts-with "!") {
             let cmd = $prompt | str trim | str substring 1..
             print $"(ansi attr_dimmed)! ($cmd)(ansi reset)"
@@ -630,7 +728,7 @@ export def "xs chat" [
 
         $turn = $turn + 1
 
-        let extra = yoke-extra-args $skills $plugin $include_path $base_url
+        let extra = yoke-extra-args $skills $plugin $include_path $base_url $config
         let args = [--provider $provider --model $model --tools $tools ...$extra $prompt]
         let context = yo-xs-read $name
         let state = if ($context | str trim) != "" {
@@ -666,11 +764,12 @@ export def "xs spawn" [
     --skills: string                            # Skill directories (comma-separated paths)
     --plugin: list<string> = []                 # Nushell plugin paths (repeatable)
     --include-path (-I): list<string> = []      # Nushell include paths (repeatable)
+    --config: path                              # Nushell config script run once at startup
     --system: string                            # Optional system prompt prepended to each call
 ] {
     yo-xs-check
     let addr = yo-xs-addr
-    let extra = yoke-extra-args $skills $plugin $include_path $base_url | each {|a| $"\"($a)\""} | str join " "
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url $config | each {|a| $"\"($a)\""} | str join " "
     let script = if $system != null {
         '{
   run: {||
@@ -721,11 +820,12 @@ export def "xs define" [
     --skills: string                            # Skill directories (comma-separated paths)
     --plugin: list<string> = []                 # Nushell plugin paths (repeatable)
     --include-path (-I): list<string> = []      # Nushell include paths (repeatable)
+    --config: path                              # Nushell config script run once at startup
     --system: string                            # Optional system prompt
 ] {
     yo-xs-check
     let addr = yo-xs-addr
-    let extra = yoke-extra-args $skills $plugin $include_path $base_url | each {|a| $"\"($a)\""} | str join " "
+    let extra = yoke-extra-args $skills $plugin $include_path $base_url $config | each {|a| $"\"($a)\""} | str join " "
     let script = if $system != null {
         '{
   run: {|frame|

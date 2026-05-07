@@ -34,7 +34,20 @@ All `yo` commands (`run`, `ask`, `continue`, `chat`) accept:
 - `--skills` — skill directories (comma-separated paths)
 - `--plugin` — Nushell plugin paths (can be repeated)
 - `--include-path`, `-I` — Nushell include paths for module resolution (can be repeated)
+- `--config` — Nushell config script run once at the start of the agent's nu session (use, def, and env mutations persist for subsequent tool calls)
 - `--session` — session file (JSONL) to continue from / save to
+
+## Resuming sessions
+
+`yo resume` continues a prior conversation. The previous context can come from a file or from the pipeline:
+
+```nushell
+yo resume "now count them" --session session.jsonl     # from file (writes back)
+open session.jsonl | lines | each { from json } | yo resume "now count them"
+open --raw session.jsonl | yo resume "now count them"  # raw JSONL string
+```
+
+When `--session` is given, the updated context is appended back to that file.
 
 ## Chat shell-escapes
 
@@ -42,12 +55,15 @@ Inside `yo chat` (and `yo xs chat`) you can run shell commands directly from the
 
 - `! <cmd>` — run `<cmd>` in Nushell and print output locally (**not** sent to the model)
 - `!! <cmd>` — run `<cmd>` and append both the command and its output to the conversation as a user message, so the model sees the result on the next turn
+- `!| <cmd>` — pipe the last assistant reply (available as `$env.YO_LAST`) through `<cmd>` and print the result locally
 
 Example:
 
 ```
 you> ! ls
 you> !! cat src/main.rs
+you> !| save -f reply.md
+you> !| from json | get items
 ```
 
 ## xs (cross.stream) integration
