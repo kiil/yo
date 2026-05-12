@@ -133,6 +133,37 @@ run --raw | save out.nu          # return code as string for piping
 
 By default `run` loads the code into the reedline prompt buffer via `commandline edit`, so pressing Enter executes it in the *current* session — env mutations, overlay changes, and `let` bindings persist. `--exec` forks a `nu` subprocess instead (no scope persistence, but works in non-interactive contexts).
 
+Background jobs (fire-and-forget turns):
+
+```nushell
+bg "summarize the last 10 commits"   # spawns a nushell job, returns job id
+"long prompt from pipe" | bg
+bg --tools none "think further"
+bg-list                              # show pending/finished bg jobs
+bg-take 1                            # merge job 1's reply into YO_CTX, print it
+bg-take 1 --peek                     # read reply without merging
+bg-take 1 --drop                     # also delete the temp files
+bg-notify-test                       # sanity-check desktop notifications
+```
+
+`bg` snapshots the current conversation, runs `yoke` in a nu job, and writes the streamed JSONL to a temp file. When the job finishes it emits a desktop notification (OSC 9 + OSC 777) and a terminal bell. Because jobs run in their own scope they can't mutate `$env.YO_CTX` directly — call `bg-take <id>` to fold the reply back into the conversation. Job ids restart at 1 each nu session; `bg-take` resolves ties by picking the newest match.
+
+Aliases: `,b` = `bg`, `,bl` = `bg-list`, `,bt` / `,,b` = `bg-take`.
+
+Skills:
+
+```nushell
+skills ~/.claude/skills              # set one or more skill directories
+skills ~/skills ./project-skills
+skills                               # show current skills
+skills --clear                       # remove skills config
+say "post this to drupal" --skills ~/.claude/skills   # one-shot override
+```
+
+When skills are active, `say` / `bg` inject a system note teaching the model that skills are CLI bundles (not tool calls) and upgrade the tools preset to include `read_file` and `nu` if missing. Alias: `,k` = `skills`.
+
+`system --default` loads a built-in knowledge-work / business system prompt without typing it out.
+
 Switching provider, model, and tools on the fly:
 
 ```nushell
@@ -158,7 +189,11 @@ Short aliases (handy for fast back-and-forth):
 | `,:`  | `cfg`    |
 | `,m`  | `model`  |
 | `,t`  | `tools`  |
+| `,k`  | `skills` |
 | `,s`  | `system` |
+| `,b`  | `bg`     |
+| `,bl` | `bg-list`|
+| `,bt` | `bg-take`|
 | `,$`  | `turns`  |
 | `,$$` | `ctx`    |
 | `,>`  | `snap`   |
